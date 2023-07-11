@@ -27,6 +27,8 @@ Also consider detecting mutex locks wrt to oom situations.
 
 MAKE A DEBUGGER TOOL FOR SHOWING STATE OF MEMORY ALLOCATORS GRAPHICALLY
 
+MAKE THE THREAD POOL USE A CONDITION VARIABLE INSTEAD OF A SEMAPHORE!
+
 */
 
 #ifndef HANNA_UTIL_H
@@ -373,6 +375,11 @@ static U64 index_of_high_bit_u64(U64 value){
   }
   return (U64)result;
 }
+
+static U64 count_leading_zeros_u64(U64 value){
+  return __lzcnt64(value);
+}
+
 #else
 #error "Unknown compiler"
 #endif
@@ -577,6 +584,10 @@ static bool semaphore_timedwait_ns(Semaphore *sem, U64 duration){
   panic("This routine is not implemented in Windows yet!");
 }
 
+static int semaphore_get_value(Semaphore *sem){
+
+}
+
 #else
 #error "Unknown OS"
 #endif
@@ -662,7 +673,7 @@ struct String{
 };
 CT_ASSERT(sizeof(String) == 16);
 
-#if 0
+#if !COMPILER_GCC
 #define LIT_STR(...) ( string_create((U8*)(__VA_ARGS__), (size_t)sizeof(__VA_ARGS__) - 1) )
 #else
 #define LIT_STR(...) ( (String){(U8*)(__VA_ARGS__), (size_t)sizeof(__VA_ARGS__) - 1} )
@@ -1044,6 +1055,8 @@ static I64 string_move_right_word(String string, I64 pos){
 //=============================================
 // *******************************************
 
+typedef struct Allocator Allocator;
+
 typedef struct OSFile{ U64 value; }OSFile;
 typedef struct OSMappedFile{ void *data; I64 data_size; }OSMappedFile;
 typedef struct OSThread{ U64 value; }OSThread;
@@ -1057,7 +1070,6 @@ static void os_close_file(OSFile file);
 static I64 os_get_file_size(OSFile file);
 static U64 os_get_file_modify_time_us(OSFile file); // In unix time in microseconds.
 static bool os_read_from_file(OSFile file, I64 offset, U8 *buffer, U32 size);
-
 /*
 NOTE(hanna - 2020-01-26): The intended usage pattern of this is something like the following:
 
@@ -1080,11 +1092,28 @@ static void os_write_to_file(OSFile file, I64 offset, U8 *buffer, U32 size, bool
 static OSMappedFile os_begin_memory_map_file_readonly(OSFile file);
 static void os_end_memory_map_file(OSFile file, OSMappedFile mapped_file);
 
+typedef struct OSDir OSDir;
+struct OSDir{
+  bool success;
+  String *entry_file_names;
+  I64 entry_count;
+};
+static OSDir os_read_directory_entries(String path, Allocator *allocator);
+
+typedef struct OSPathInfo OSPathInfo;
+struct OSPathInfo{
+#define OS_PATH_KIND_does_not_exist  0
+#define OS_PATH_KIND_file            1
+#define OS_PATH_KIND_directory       2
+#define OS_PATH_KIND_other           3
+  EnumU32(OS_PATH_INFO_KIND) kind;
+};
+static OSPathInfo os_get_path_info(String path);
+
 static U64 os_get_monotonic_time_us(); // NOTE: Both monotonically increasing & continuous. Relative to an arbitrary point in time.
 static U64 os_get_unix_time_us(); // NOTE: System time. Need not be continuous.
 static I64 os_get_unix_time();
 
-typedef struct Allocator Allocator;
 static String os_get_working_directory(Allocator *allocator);
 static String os_get_home_directory(Allocator *allocator);
 
@@ -1117,12 +1146,27 @@ struct ThreadContext{
     struct Allocator *frame_temp;
     struct ProfThreadContext *prof;
   } symbols;
+
+  struct{
+    struct SpallBuffer *spall_buffer;
+    U32 spall_tid;
+  } game1;
 };
 static void set_thread_context(ThreadContext *tc);
 static ThreadContext* get_thread_context();
 
 #if COMPILER_GCC
 static __thread ThreadContext *_global_thread_context;
+
+static void set_thread_context(ThreadContext *tc){
+  _global_thread_context = tc;
+}
+static ThreadContext* get_thread_context(){
+  assert(_global_thread_context);
+  return _global_thread_context;
+}
+#elif COMPILER_MSVC
+static __declspec(thread) ThreadContext *_global_thread_context;
 
 static void set_thread_context(ThreadContext *tc){
   _global_thread_context = tc;
@@ -3802,7 +3846,7 @@ static String string_utf8_from_utf32(Allocator *allocator, StringUTF32 utf32){
     U8 buffer[4];
     U32 bytes = encode_utf8(utf32.data[i], buffer, buffer + sizeof(buffer));
     if(bytes == 0){
-      result = (Array(U8)){0};
+      clear_item(&result);
       break;
     }
     array_u8_push_data(&result, buffer, bytes);
@@ -3880,6 +3924,31 @@ static void string_utf8_to_utf16_array(Array(U16) *out, String string){
     fiz(count){
       array_push(out, data[i]);
     }
+  }
+}
+
+static StringUTF16 string_utf16_from_cstring(wchar_t *wide){
+  StringUTF16 result = {0};
+  result.data = (U16*)wide;
+  while(wide[result.count]){
+    result.count += 1;
+  }
+  return result;
+}
+
+static void string_utf16_to_utf8_array(Array(U8) *out, StringUTF16 string){
+  for(I64 cursor = 0; cursor < string.count;){
+    U16 data[2];
+    data[0] = string.data[cursor + 0];
+    if(cursor + 1 < string.count){
+      data[1] = string.data[cursor + 1];
+    }
+    U32 codepoint;
+    cursor += utf16_decode_codepoint(data, &codepoint);
+    if(codepoint == INVALID_CODEPOINT){
+      break; // TODO: Don't just silentlty fail, do something!
+    }
+    array_u8_push_codepoint(out, codepoint);
   }
 }
 
@@ -4007,7 +4076,7 @@ static void _bn_verify_init_and_unpadded(BigN n){
 
 static BigN bn_create(U64 *limbs, I64 count){
   assert(count > 0);
-  BigN result = {};
+  BigN result = {0};
   result.limbs = limbs;
   result.count = count;
   return result;
@@ -4027,7 +4096,7 @@ static BigN bn_subnumber(BigN n, I64 begin, I64 end){
   assert(end >= begin);
   assert(begin >= 0);
 
-  BigN result = {};
+  BigN result = {0};
 
   if(n.count >= end && end > begin){
     result.limbs = n.limbs + begin;
@@ -4150,25 +4219,42 @@ static I64 bn_shift_up(U64 *out, I64 count, U64 shift){
   return result;
 }
 
+#ifdef COMPILER_MSVC
+#include <intrin.h>
+#endif
+
 static void bn_add(U64 *out, BigN a, BigN b){
   _bn_verify_init_and_unpadded(a);
   _bn_verify_init_and_unpadded(b);
 
-  assert(a.count >= b.count); // Here we only require a to have a greater or equal limb count than b
+  assert(a.count >= b.count); // Here we only require `a` to have a greater or equal limb count than `b`
 
   U64 carry = 0;
   I64 i = 0;
   for(; i < b.count; i += 1){
     U64 value;
+#if COMPILER_GCC
     CT_ASSERT(sizeof(unsigned long) == sizeof(U64));
     carry = __builtin_uaddl_overflow(a.limbs[i], carry, &value);
     carry |= __builtin_uaddl_overflow(value, b.limbs[i], &value);
+#elif COMPILER_MSVC
+    carry = _addcarry_u64(carry, a.limbs[i], b.limbs[i], &value);
+#else
+#error "Unsupported compiler"
+#endif
+
     out[i] = value;
   }
   for(; i < a.count; i += 1){
     U64 value;
+#if COMPILER_GCC
     CT_ASSERT(sizeof(unsigned long) == sizeof(U64));
     carry = __builtin_uaddl_overflow(a.limbs[i], carry, &value);
+#elif COMPILER_MSVC
+    carry = _addcarry_u64(carry, a.limbs[i], 0, &value);
+#else
+#error "Unsupported compiler"
+#endif
     out[i] = value;
   }
   out[i] = carry;
@@ -4184,15 +4270,26 @@ static void bn_sub(U64 *out, BigN a, BigN b){
   I64 i = 0;
   for(; i < b.count; i += 1){
     U64 value;
+#if COMPILER_GCC
     CT_ASSERT(sizeof(unsigned long) == sizeof(U64));
     carry = __builtin_usubl_overflow(a.limbs[i], carry, &value);
     carry |= __builtin_usubl_overflow(value, b.limbs[i], &value);
+#else
+    carry = _subborrow_u64(0, a.limbs[i], carry, &value);
+    carry |= _subborrow_u64(0, value, b.limbs[i], &value);
+#endif
     out[i] = value;
   }
   for(; i < a.count; i += 1){
     U64 value;
+#if COMPILER_GCC
     CT_ASSERT(sizeof(unsigned long) == sizeof(U64));
     carry = __builtin_usubl_overflow(a.limbs[i], carry, &value);
+#elif COMPILER_MSVC
+    carry = _subborrow_u64(0, a.limbs[i], carry, &value);
+#else
+#error "Unsupported compiler"
+#endif
     out[i] = value;
   }
   assert(!carry);
@@ -4204,16 +4301,20 @@ static void _bn_add_single_limb(U64 *out, I64 index, U64 value){
   assert(index >= 0);
   U64 carry = value;
   for(; carry; index += 1){
+#if COMPILER_GCC
     CT_ASSERT(sizeof(unsigned long) == sizeof(U64));
     carry = __builtin_uaddl_overflow(out[index], carry, &out[index]);
+#elif COMPILER_MSVC
+    carry = _addcarry_u64(carry, out[index], 0, &out[index]);
+#else
+#error "Unsupported compiler"
+#endif
   }
   assert(carry == 0);
 }
 static I64 bn_mul_shift_down(U64 *out, BigN a, BigN b, U64 shift){
   _bn_verify_init_and_unpadded(a);
   _bn_verify_init_and_unpadded(b);
-
-  typedef unsigned __int128 U128;
 
   U64 big_shift = (shift >> LIT_U64(6));
   U64 small_shift = (shift & LIT_U64(63));
@@ -4225,9 +4326,15 @@ static I64 bn_mul_shift_down(U64 *out, BigN a, BigN b, U64 shift){
     fiz(b.count){
       if(i + j < big_shift){ continue; }
 
+#if COMPILER_GCC
+      typedef unsigned __int128 U128;
       U128 value = (U128)a.limbs[j] * (U128)b.limbs[i];
       U64 high = (U64)(value >> 64);
       U64 low = (U64)value;
+#else
+      U64 high;
+      U64 low = _mul128(a.limbs[j], b.limbs[i], (LONG64*)&high);
+#endif
       _bn_add_single_limb(out, i + j + 0 - big_shift, low);
       _bn_add_single_limb(out, i + j + 1 - big_shift, high);
     }
@@ -4381,7 +4488,7 @@ static void _bz_unpad(BigZ *z){
 }
 
 static BigZ bz_create(Allocator *allocator){
-  BigZ result = {};
+  BigZ result = {0};
   result.flags = BIG_NUM_F_allocated;
   result.limbs = (U64*)allocator_get_stub(allocator);
   return result;
@@ -4588,7 +4695,7 @@ static bool bz_equals_i64(BigZ a, I64 b){
       }
     }else{
       if((a.flags & BIG_NUM_F_negative)){
-        result = (a.limbs[0] == -(U64)b);
+        result = (a.limbs[0] == 0-(U64)b); // 0 - b because otherwise MSVC complains
       }
     }
   }
@@ -4981,7 +5088,7 @@ static void bz_min(BigZ *out, BigZ a, BigZ b){
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 static BigZ bz_push_copy(Allocator *allocator, BigZ z){
-  BigZ result = {};
+  BigZ result = {0};
   result.limbs = allocator_push_items_noclear(allocator, U64, z.count);
   result.count = z.count;
   copy_items(result.limbs, z.limbs, U64, z.count);
@@ -4991,19 +5098,19 @@ static BigZ bz_push_copy(Allocator *allocator, BigZ z){
   return result;
 }
 static BigZ bz_push_i64(Allocator *allocator, I64 value){
-  BigZ result = {};
+  BigZ result = {0};
   result.limbs = allocator_push_items_noclear(allocator, U64, 1);
   result.count = 1;
   if(value >= 0){
     result.limbs[0] = (U64)value;
   }else{
-    result.limbs[0] = -(U64)value;
+    result.limbs[0] = 0-(U64)value;
     result.flags |= BIG_NUM_F_negative;
   }
   return result;
 }
 static BigZ bz_push_u64(Allocator *allocator, U64 value){
-  BigZ result = {};
+  BigZ result = {0};
   result.limbs = allocator_push_items_noclear(allocator, U64, 1);
   result.count = 1;
   result.limbs[0] = value;
@@ -5011,7 +5118,7 @@ static BigZ bz_push_u64(Allocator *allocator, U64 value){
 }
 static BigZ bz_push_base10_string(Allocator *allocator, String string, bool allow_negative){
   Allocator *temp = temp_begin();
-  BigZ result = {};
+  BigZ result = {0};
   BigZ z = bz_create(temp);
   if(bz_set_base10_string(&z, string, allow_negative)){
     result = bz_push_copy(allocator, z);
@@ -5126,7 +5233,7 @@ static StringBuilder sb_create(Allocator *allocator){
   return result;
 }
 static StringBuilder sb_create_fixed(U8 *buffer, I64 size){
-  StringBuilder result = {};
+  StringBuilder result = {0};
   assert(size < UINT32_MAX); // If you reach this for a real use case, then you either need to change SBChunk to handle larger things or emit multiple SBChunk's
   if(size < sizeof(SBChunk)){
     result.ran_out_of_space = true;
@@ -5287,7 +5394,7 @@ static void sb_print_bz_hex(StringBuilder *sb, BigZ z, String separator){
         sb_append_string(sb, separator);
       }
       U64 limb = z.limbs[z.count - 1 - j];
-      char *digits = "0123456789abcdef";
+      char *digits = (char*)"0123456789abcdef";
       fiz(16){
         U64 digit = (limb >> ((15 - i) * 4)) & 0xF;
         sb_append_u8(sb, digits[digit]);
@@ -5299,6 +5406,8 @@ static void sb_print_bz_hex(StringBuilder *sb, BigZ z, String separator){
 //
 // Ryu float to decimal algorithm implementation
 //
+
+#if 0
 
 #if 0 // The program that generates the Ryu tables:
 static void generate_ryu_tables(StringBuilder *sb){
@@ -5959,6 +6068,7 @@ static DecimalF64 f64_to_decimal_naive(F64 f64){
 }
 #endif
 
+#endif
 
 /*
 TODO(hanna): This is a macro for while we are still transitioning to the new printf implementation. Hopefully we can switch completly soon! 2023-06-10
@@ -7149,7 +7259,9 @@ static void thread_pool_init(ThreadPool *pool, U32 num_workers){
   }
 }
 static void thread_pool_destroy(ThreadPool *pool){
+#if COMPILER_GCC
   assert(semaphore_get_value(&pool->job_count_semaphore) == 0 && "There are still jobs in the queue!! You can only destroy the thread pool when the queue is empty.");
+#endif
 
   atomic_store_u32(&pool->running, 0);
   fiz(pool->num_workers){ // Wake up all threads so they can die
@@ -7163,7 +7275,7 @@ static void thread_pool_destroy(ThreadPool *pool){
 
   mutex_destroy(&pool->mutex);
   semaphore_destroy(&pool->job_count_semaphore);
-  *pool = (ThreadPool){0};
+  clear_item(pool);
 }
 
 static void thread_pool_submit_job(ThreadPool *pool, Job *job){
@@ -7536,6 +7648,7 @@ static wchar_t* win32_path_to_wide(Allocator *allocator, String path){
   Array(U16) result = array_create(U16, allocator);
 
   // NOTE(hanna): First we prepend "\\?\" in order to allow for long paths
+  // TODO: Should this be enabled or not??
   /*
   array_push(&result, '\\');
   array_push(&result, '\\');
@@ -7549,6 +7662,13 @@ static wchar_t* win32_path_to_wide(Allocator *allocator, String path){
 
   return (wchar_t*)result.e;
 }
+
+static String win32_wide_to_path(Allocator *allocator, wchar_t *wide){
+  Array(U8) result = array_create(U8, allocator);
+  string_utf16_to_utf8_array(&result, string_utf16_from_cstring(wide));
+  return array_u8_as_string(result);
+}
+
 static HANDLE win32_get_file_handle(OSFile file){
   if(!file.value){
     panic("Recieved invalid file handle");
@@ -7690,6 +7810,67 @@ static OSMappedFile os_begin_memory_map_file_readonly(OSFile file){
 static void os_end_memory_map_file(OSFile file, OSMappedFile mapped_file){
 }
 */
+
+static OSDir os_read_directory_entries(String path, Allocator *allocator){
+  Allocator *temp = temp_begin();
+
+  OSDir result = {0};
+
+  // TODO: If we ever add a push_printf_cstring we could use that
+  String query = allocator_push_printf(temp, "%.*s\\*", StrFormatArg(path));
+  wchar_t *wide_query = win32_path_to_wide(temp, query);
+
+  WIN32_FIND_DATA find_data;
+  HANDLE find_handle = FindFirstFile(wide_query, &find_data);
+  if(find_handle != INVALID_HANDLE_VALUE){
+    Array(String) filenames = array_create(String, allocator);
+
+    do{
+      wchar_t *wide = find_data.cFileName;
+      bool ignore = (wide[0] == '.' && wide[1] == '\0') || (wide[0] == '.' && wide[1] == '.' && wide[2] == '\0');
+      if(!ignore){
+        String filename = win32_wide_to_path(allocator, wide);
+        array_push(&filenames, filename);
+      }
+    }while(FindNextFile(find_handle, &find_data));
+
+    int error = GetLastError();
+    if(error == ERROR_NO_MORE_FILES){
+      result.success = true;
+      result.entry_count = filenames.count;
+      result.entry_file_names = filenames.e;
+    }
+
+    FindClose(find_handle);
+  }else if(GetLastError() == ERROR_FILE_NOT_FOUND){
+    result.success = true;
+  }
+
+  temp_end(&temp);
+
+  return result;
+}
+
+static OSPathInfo os_get_path_info(String path){
+  Allocator *temp = temp_begin();
+
+  OSPathInfo result = {0};
+
+  wchar_t *wide = win32_path_to_wide(temp, path);
+
+  // TODO: Proper check to see if something is a regular file, I don't think this is sufficient. Apparently this can be done through CreateFile, dunno how that works though
+  DWORD attributes = GetFileAttributes(wide);
+  if(attributes != INVALID_FILE_ATTRIBUTES){
+    if(attributes & FILE_ATTRIBUTE_DIRECTORY){
+      result.kind = OS_PATH_KIND_directory;
+    }else{
+      result.kind = OS_PATH_KIND_file;
+    }
+  }
+
+  temp_end(&temp);
+  return result;
+}
 
 static U64 os_get_monotonic_time_us(){
   LARGE_INTEGER time;
