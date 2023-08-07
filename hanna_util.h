@@ -29,59 +29,12 @@ MAKE A DEBUGGER TOOL FOR SHOWING STATE OF MEMORY ALLOCATORS GRAPHICALLY
 
 MAKE THE THREAD POOL USE A CONDITION VARIABLE INSTEAD OF A SEMAPHORE!
 
+WE SHOULD REALLY MAKE ASSERT HAVE A DIFFERENT NAME, SO IT DOESNT CLASH WITH THE BUILTIN ASSERT, E.G. USE ASSERT UPPERCASED
+
 */
 
 #ifndef HANNA_UTIL_H
 #define HANNA_UTIL_H
-
-#define STB_SPRINTF_IMPLEMENTATION
-#define STB_SPRINTF_STATIC
-#include "3rdparty/stb_sprintf.h"
-
-#include <stdlib.h>
-#include <stdio.h>
-#include <stdarg.h>
-#include <string.h>
-
-//~ Sane names for data types
-#include <stdint.h>
-#include <stddef.h>
-#include <stdbool.h>
-
-typedef uint64_t U64;
-typedef uint32_t U32;
-typedef uint16_t U16;
-typedef uint8_t  U8;
-
-typedef int64_t I64;
-typedef int32_t I32;
-typedef int16_t I16;
-typedef int8_t  I8;
-
-typedef float  F32;
-typedef double F64;
-
-/* Intended for when you need your enum value to be stored as a specific size, but still want to mark up what enum kind it is. E.g.
-Enum32(TokenKind) kind;
- */
-#define EnumU8(_Name_) U8
-#define EnumU16(_Name_) U16
-#define EnumU32(_Name_) U32
-
-//~ Detect compiler
-
-#define COMPILER_MSVC 0
-#define COMPILER_GCC 0
-
-#if defined(_MSC_VER)
-#  undef COMPILER_MSVC
-#  define COMPILER_MSVC 1
-#elif defined(__GNUC__)
-#  undef COMPILER_GCC
-#  define COMPILER_GCC 1
-#else
-#  error "Unknown compiler!"
-#endif
 
 //~ Detect architecture
 
@@ -125,6 +78,105 @@ Enum32(TokenKind) kind;
 #  error "Unable to determine operating system!"
 #endif
 
+//~ Detect compiler
+
+#define COMPILER_MSVC 0
+#define COMPILER_GCC 0
+
+#if defined(_MSC_VER)
+#  undef COMPILER_MSVC
+#  define COMPILER_MSVC 1
+#elif defined(__GNUC__)
+#  undef COMPILER_GCC
+#  define COMPILER_GCC 1
+#else
+#  error "Unknown compiler!"
+#endif
+
+//~ Includes
+
+#if OS_LINUX
+#undef _GNU_SOURCE
+#define _GNU_SOURCE
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/mman.h>
+#include <sys/time.h>
+#include <fcntl.h>
+#include <dlfcn.h>
+#include <pthread.h>
+#include <time.h>
+#include <dirent.h>
+#include <errno.h>
+#include <pthread.h>
+#include <sys/random.h>
+#elif OS_WINDOWS
+#include <windows.h>
+#else
+#error "Unknown architecture"
+#endif
+
+#if COMPILER_MSVC
+#include <intrin.h>
+#elif COMPILER_GCC
+#include <x86intrin.h>
+#else
+#error "Unknown compiler"
+#endif
+
+#if ARCH_X86_64
+#include <immintrin.h>
+#include <pmmintrin.h>
+#include <emmintrin.h>
+#elif ARCH_ARM64
+// nothing here yet...
+#else
+#error "Unknown architecture"
+#endif
+
+// TODO(hanna - 2021-02-15): Don't use the standard library!
+#include <math.h>
+#include <setjmp.h>
+
+//~ STB SPRINTF
+
+#define STB_SPRINTF_IMPLEMENTATION
+#define STB_SPRINTF_STATIC
+#include "3rdparty/stb_sprintf.h"
+
+//~ Types
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <stdarg.h>
+#include <string.h>
+
+//~ Sane names for data types
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+
+typedef uint64_t U64;
+typedef uint32_t U32;
+typedef uint16_t U16;
+typedef uint8_t  U8;
+
+typedef int64_t I64;
+typedef int32_t I32;
+typedef int16_t I16;
+typedef int8_t  I8;
+
+typedef float  F32;
+typedef double F64;
+
+/* Intended for when you need your enum value to be stored as a specific size, but still want to mark up what enum kind it is. E.g.
+Enum32(TokenKind) kind;
+ */
+#define EnumU8(_Name_) U8
+#define EnumU16(_Name_) U16
+#define EnumU32(_Name_) U32
+
 //~ Literals
 
 #define LIT_U64(_value_) ( _value_ ## ULL )
@@ -138,10 +190,11 @@ Enum32(TokenKind) kind;
 #define _CT_ASSERT_NAME(_counter_) _CT_ASSERT_NAME2(_counter_)
 #define CT_ASSERT(_condition_) \
   typedef struct{ int x[(_condition_) ? 1 : -1]; } _CT_ASSERT_NAME(__COUNTER__)
-//#define COMPILE_TIME_ASSERTION(...) CT_ASSERT(__VA_ARGS__)
 
-#define _STRINGIZE(_a_) #_a_
-#define STRINGIZE(_a_) _STRINGIZE(_a_)
+// NOTE(hanna): Seems like (newer versions?) of MSVC complains that _STRINGIZE is already defined, so for now this is named _STRINGIZE2
+#define _STRINGIZE2(_a_) #_a_
+#define STRINGIZE(_a_) _STRINGIZE2(_a_)
+
 #define _COMBINE2(_a_, _b_) _a_##_b_
 #define COMBINE2(_a_, _b_) _COMBINE2(_a_, _b_)
 #define COMBINE3(_a_, _b_, _c_) COMBINE2(_a_, COMBINE2(_b_, _c_))
@@ -155,9 +208,13 @@ Enum32(TokenKind) kind;
 #define CLAMP01(_x_) CLAMP(0, (_x_), 1)
 
 // NOTE(hanna): These macros are copied from Shawn McGrath from when he used to stream. Thanks!
-#define fiz(_count_) for(I64 i = 0; i < (_count_); ++i)
-#define fjz(_count_) for(I64 j = 0; j < (_count_); ++j)
-#define fkz(_count_) for(I64 k = 0; k < (_count_); ++k)
+#define fiz(_count_) for(I64 i = 0; i < (_count_); i += 1)
+#define fjz(_count_) for(I64 j = 0; j < (_count_); j += 1)
+#define fkz(_count_) for(I64 k = 0; k < (_count_); k += 1)
+
+#define fiz_U32(_count_) for(U32 i = 0; i < (_count_); i += 1)
+#define fjz_U32(_count_) for(U32 j = 0; j < (_count_); j += 1)
+#define fkz_U32(_count_) for(U32 k = 0; k < (_count_); k += 1)
 
 #define ARRAY_COUNT(_array_) (sizeof(_array_) / sizeof((_array_)[0]))
 
@@ -251,7 +308,15 @@ extern "C"
 #endif
 void __assert_fail (void *garbage);
 
-#if DEBUG_BUILD
+#if !defined(HANNA_ENABLE_ASSERTS)
+#error "HANNA_ENABLE_ASSERTS is not defined! You must #define HANNA_ENABLE_ASSERTS to either 1 or 0, depending on whether you want asserts or not be enabled."
+#endif
+
+#if HANNA_ENABLE_ASSERTS != 0 && HANNA_ENABLE_ASSERTS != 1
+#error "HANNA_ENABLE_ASSERTS is not defined to 0 or 1. You must #define HANNA_ENABLE_ASSERTS to either 1 or 0, depending on whether you want asserts or not be enabled."
+#endif
+
+#if HANNA_ENABLE_ASSERTS
 static int assertion_failed(const char *condition, int line, const char *file){
   fprintf(stderr, "(%s:%d) Assertion %s failed\n", file, line, condition);
   debug_trap();
@@ -262,7 +327,7 @@ static int assertion_failed(const char *condition, int line, const char *file){
 #define assert(_condition_) ((_condition_) ? 0 : assertion_failed(#_condition_, __LINE__, __FILE__))
 #else
 #undef assert
-#define assert(_condition_) ((_condition_), 0)
+#define assert(_condition_) ((void)(_condition_))
 #endif
 
 //~ Basic memory operations
@@ -346,7 +411,6 @@ static U64 count_leading_zeros_u64(U64 value){
 }
 
 #elif COMPILER_MSVC
-#include <intrin.h>
 static U32 index_of_low_bit_u32(U32 value){
   U32 result;
   if(!BitScanForward((unsigned long*)&result, value)){
@@ -388,9 +452,10 @@ static U64 count_leading_zeros_u64(U64 value){
 // Basic OS interaction
 // ======================
 
+//~ OS-provided mutex
+
 // NOTE(hanna): You may not move an initialized mutex!!
 #if OS_LINUX
-#include <pthread.h>
 typedef struct OSMutex{ pthread_mutex_t value; } OSMutex;
 #elif OS_WINDOWS
 #include <windows.h>
@@ -398,10 +463,12 @@ typedef struct OSMutex{ CRITICAL_SECTION critical_section; } OSMutex;
 #else
 #error "Unknown OS"
 #endif
-static void mutex_init(OSMutex *mutex);
-static void mutex_destroy(OSMutex *mutex);
-static void mutex_lock(OSMutex *mutex);
-static void mutex_unlock(OSMutex *mutex);
+static void os_mutex_init(OSMutex *mutex);
+static void os_mutex_destroy(OSMutex *mutex);
+static void os_mutex_lock(OSMutex *mutex);
+static void os_mutex_unlock(OSMutex *mutex);
+
+//~ Semaphore
 
 #if OS_LINUX
 #include <semaphore.h>
@@ -419,48 +486,46 @@ static void semaphore_wait(Semaphore *sem);
 //static bool semaphore_trywait(Semaphore *sem);
 //static bool semaphore_timedwait_ns(Semaphore *sem, U64 duration);
 
+//~ Condition variable
+
 #if OS_LINUX
-#undef _GNU_SOURCE
-#define _GNU_SOURCE
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <sys/mman.h>
-#include <sys/time.h>
-#include <fcntl.h>
-#include <dlfcn.h>
-#include <pthread.h>
+typedef struct OSCondVar{ pthread_cond_t value; } OSCondVar;
+#elif OS_WINDOWS
+typedef struct OSCondVar{ CONDITION_VARIABLE value; } OSCondVar;
+#else
+#error "Unknown OS"
+#endif
 
-#include <unistd.h>
-#include <time.h>
-#include <dirent.h>
+static void os_cond_var_init(OSCondVar *cond);
+static void os_cond_var_destroy(OSCondVar *cond);
+static void os_cond_var_wait(OSCondVar *cond, OSMutex *mutex);
+static void os_cond_var_wake_one(OSCondVar *cond);
+static void os_cond_var_wake_all(OSCondVar *cond);
 
-#include <stdarg.h>
-#include <string.h>
-#include <stdlib.h>
+//~ Implementation
 
-#include <stdio.h>
-#include <errno.h>
+#if OS_LINUX
 
 //~ OSMutex
 
 // TODO: We should make some proper comparison with using a Handmade Hero-style ticket mutex (perhaps use ips-student-challenge as a benchmark)
 
-static void mutex_init(OSMutex *mutex){
+static void os_mutex_init(OSMutex *mutex){
   if(pthread_mutex_init(&mutex->value, NULL) != 0){
     panic("pthread_mutex_init() returned non-zero: errno = %d", errno);
   }
 }
-static void mutex_destroy(OSMutex *mutex){
+static void os_mutex_destroy(OSMutex *mutex){
   if(pthread_mutex_destroy(&mutex->value) != 0){
     panic("pthreaod_mutex_destroy() returned non-zero: errno = %d", errno);
   }
 }
-static void mutex_lock(OSMutex *mutex){
+static void os_mutex_lock(OSMutex *mutex){
   if(pthread_mutex_lock(&mutex->value) != 0){
     panic("pthread_mutex_lock() returned non-zero: errno = %d", errno);
   }
 }
-static void mutex_unlock(OSMutex *mutex){
+static void os_mutex_unlock(OSMutex *mutex){
   if(pthread_mutex_unlock(&mutex->value) != 0){
     panic("pthread_mutex_unlock() returned non-zero: errno = %d", errno);
   }
@@ -536,18 +601,48 @@ static int semaphore_get_value(Semaphore *sem){
   }
   return result;
 }
+
+static void os_cond_var_init(OSCondVar *cond){
+  if(pthread_cond_init(&cond->value, NULL) != 0){
+    panic("pthread_cond_init() failed: errno=%d: %s", errno, strerror(errno));
+  }
+}
+static void os_cond_var_destroy(OSCondVar *cond){
+  if(pthread_cond_destroy(&cond->value) != 0){
+    panic("pthread_cond_destroy() failed: errno=%d: %s", errno, strerror(errno));
+  }
+}
+static void os_cond_var_wait(OSCondVar *cond, OSMutex *mutex){
+  int error = pthread_cond_wait(&cond->value, &mutex->value);
+  if(error != 0){
+    panic("pthread_cond_wait() failed: errno=%d: %s", error, strerror(error));
+  }
+}
+static void os_cond_var_wake_one(OSCondVar *cond){
+  int error = pthread_cond_signal(&cond->value);
+  if(error != 0){
+    panic("pthread_cond_signal() failed: errno=%d: %s", error, strerror(error));
+  }
+}
+static void os_cond_var_wake_all(OSCondVar *cond){
+  int error = pthread_cond_broadcast(&cond->value);
+  if(error != 0){
+    panic("pthread_cond_broadcast() failed: errno=%d: %s", error, strerror(error));
+  }
+}
+
 #elif OS_WINDOWS
 
-static void mutex_init(OSMutex *mutex){
+static void os_mutex_init(OSMutex *mutex){
   InitializeCriticalSection(&mutex->critical_section);
 }
-static void mutex_destroy(OSMutex *mutex){
+static void os_mutex_destroy(OSMutex *mutex){
   DeleteCriticalSection(&mutex->critical_section);
 }
-static void mutex_lock(OSMutex *mutex){
+static void os_mutex_lock(OSMutex *mutex){
   EnterCriticalSection(&mutex->critical_section);
 }
-static void mutex_unlock(OSMutex *mutex){
+static void os_mutex_unlock(OSMutex *mutex){
   LeaveCriticalSection(&mutex->critical_section);
 }
 
@@ -585,9 +680,29 @@ static bool semaphore_timedwait_ns(Semaphore *sem, U64 duration){
 }
 
 static int semaphore_get_value(Semaphore *sem){
-
+  panic("This routine is not implemented in Windows yet!");
 }
 
+
+static void os_cond_var_init(OSCondVar *cond){
+  InitializeConditionVariable(&cond->value);
+}
+
+static void os_cond_var_destroy(OSCondVar *cond){
+  // Nothing to do, Win32 is nice and doesn't care
+}
+static void os_cond_var_wait(OSCondVar *cond, OSMutex *mutex){
+  if(SleepConditionVariableCS(&cond->value, &mutex->critical_section, INFINITE) == 0){
+    int error = GetLastError();
+    panic("SleepConditionVariableCS failed: GetLastError() -> %d", error);
+  }
+}
+static void os_cond_var_wake_one(OSCondVar *cond){
+  WakeConditionVariable(&cond->value);
+}
+static void os_cond_var_wake_all(OSCondVar *cond){
+  WakeAllConditionVariable(&cond->value);
+}
 #else
 #error "Unknown OS"
 #endif
@@ -606,6 +721,7 @@ static int semaphore_get_value(Semaphore *sem){
 typedef struct __attribute__((aligned(4))) AtomicU32{ U32 _value; } AtomicU32;
 static U32 atomic_read_u32(AtomicU32 *atomic){ return __atomic_load_4(&atomic->_value, __ATOMIC_SEQ_CST); }
 static void atomic_store_u32(AtomicU32 *atomic, U32 value){ __atomic_store_4(&atomic->_value, value, __ATOMIC_SEQ_CST); }
+static U32 atomic_exchange_u32(AtomicU32 *atomic, U32 value){ return __atomic_exchange_4(&atomic->_value, value, __ATOMIC_SEQ_CST); }
 static U32 atomic_add_u32(AtomicU32 *atomic, U32 value){ return __atomic_fetch_add(&atomic->_value, value, __ATOMIC_SEQ_CST); }
 static U32 atomic_sub_u32(AtomicU32 *atomic, U32 value){ return __atomic_fetch_sub(&atomic->_value, value, __ATOMIC_SEQ_CST); }
 static bool atomic_compare_exchange_u32(AtomicU32 *atomic, U32 old_value, U32 new_value){
@@ -621,6 +737,7 @@ static bool atomic_compare_exchange_u32(AtomicU32 *atomic, U32 old_value, U32 ne
 typedef struct __attribute__((aligned(8))) AtomicU64{ U64 _value; } AtomicU64;
 static U64 atomic_read_u64(AtomicU64 *atomic){ return __atomic_load_8(&atomic->_value, __ATOMIC_SEQ_CST); }
 static void atomic_store_u64(AtomicU64 *atomic, U64 value){ __atomic_store_8(&atomic->_value, value, __ATOMIC_SEQ_CST); }
+static U64 atomic_exchange_u64(AtomicU64 *atomic, U64 value){ return __atomic_exchange_8(&atomic->_value, value, __ATOMIC_SEQ_CST); }
 static U64 atomic_add_u64(AtomicU64 *atomic, U64 value){ return __atomic_fetch_add(&atomic->_value, value, __ATOMIC_SEQ_CST); }
 static U64 atomic_sub_u64(AtomicU64 *atomic, U64 value){ return __atomic_fetch_sub(&atomic->_value, value, __ATOMIC_SEQ_CST); }
 static bool atomic_compare_exchange_u64(AtomicU64 *atomic, U64 old_value, U64 new_value){
@@ -639,6 +756,7 @@ static bool atomic_compare_exchange_u64(AtomicU64 *atomic, U64 old_value, U64 ne
 typedef struct __declspec(align(4)) AtomicU32{ volatile U32 _value; } AtomicU32;
 static U32 atomic_read_u32(AtomicU32 *atomic){ return atomic->_value; }
 static void atomic_store_u32(AtomicU32 *atomic, U32 value){ InterlockedExchange(&atomic->_value, value); }
+static U32 atomic_exchange_u32(AtomicU32 *atomic, U32 value){ return InterlockedExchange(&atomic->_value, value); }
 static U32 atomic_add_u32(AtomicU32 *atomic, U32 value){ return InterlockedAdd((volatile LONG*)&atomic->_value, value); }
 static U32 atomic_sub_u32(AtomicU32 *atomic, U32 value){ return InterlockedAdd((volatile LONG*)&atomic->_value, 0-value); }
 static bool atomic_compare_exchange_u32(AtomicU32 *atomic, U32 old_value, U32 new_value){
@@ -650,6 +768,7 @@ static bool atomic_compare_exchange_u32(AtomicU32 *atomic, U32 old_value, U32 ne
 typedef struct __declspec(align(8)) AtomicU64{ volatile U64 _value; } AtomicU64;
 static U64 atomic_read_u64(AtomicU64 *atomic){ return atomic->_value; }
 static void atomic_store_u64(AtomicU64 *atomic, U64 value){ InterlockedExchange64((volatile LONG64*)&atomic->_value, value); }
+static U64 atomic_exchange_u64(AtomicU64 *atomic, U64 value){ return InterlockedExchange64((volatile LONG64*)&atomic->_value, value); }
 static U64 atomic_add_u64(AtomicU64 *atomic, U64 value){ return InterlockedAdd64((volatile LONG64*)&atomic->_value, value); }
 static U64 atomic_sub_u64(AtomicU64 *atomic, U64 value){ return InterlockedAdd64((volatile LONG64*)&atomic->_value, 0-value); }
 static bool atomic_compare_exchange_u64(AtomicU64 *atomic, U64 old_value, U64 new_value){
@@ -1095,7 +1214,7 @@ static void os_end_memory_map_file(OSFile file, OSMappedFile mapped_file);
 typedef struct OSDir OSDir;
 struct OSDir{
   bool success;
-  String *entry_file_names;
+  String *entry_filenames;
   I64 entry_count;
 };
 static OSDir os_read_directory_entries(String path, Allocator *allocator);
@@ -1194,8 +1313,6 @@ TODO(hanna - 2022-12-08): Our big todos are
 [x] TODO: Temporary memory storage
 
 */
-
-#include <setjmp.h>
 
 //~ Allocator Budget
 
@@ -1909,7 +2026,6 @@ static U64 freelist_memory_masks[7] = {
   LIT_U64(0xaaaaaaaaaaaaaaaa),
 };
 
-#include <immintrin.h>
 static U64 _temp_freelist_to_memory(U64 value){
   // TODO: Optimization: According to Wikipedia and the internet, on AMD processors before Zen 3 PDEP/PEXT takes at least 18 cycles...
   // TODO: This also doesn't work on older processors, so we might want to find an alternative.
@@ -2690,8 +2806,6 @@ static bool parse_i64(String string, I64 *_output, I64 base, bool allow_negative
   return result;
 }
 
-#include <math.h>
-#include <errno.h>
 static bool parse_base10_string_as_f64(String string, F64 *_output){
   bool result = false;
 
@@ -2823,8 +2937,6 @@ static F64 f64vector_compute_sum(I64 element_count, F64 *values){
 
 //~ Floating point
 
-// TODO(hanna - 2021-02-15): Don't use the standard library!
-#include <math.h>
 static F32 f32_fractional_part(F32 x){
   F32 i;
   return modff(x, &i);
@@ -3102,9 +3214,25 @@ static void v3_swap(V3 *a, V3 *b){
   *b = tmp;
 }
 
+static V3 v3_normalize(V3 v){
+  F32 length = sqrtf(v3_length_squared(v));
+  return v3_scalar_mul(v, 1.f / length);
+}
+
 static F32 v3_max_element(V3 v){ return MAXIMUM3(v.x, v.y, v.z); }
 
 static V3 v3_hadamard(V3 a, V3 b){ return vec3(a.x * b.x, a.y * b.y, a.z * b.z); }
+
+#ifdef __cplusplus
+static V3 operator+(V3 a, V3 b){ return vec3(a.x + b.x, a.y + b.y, a.z + b.z); }
+static V3 operator+=(V3 &a, V3 b){ return a = a + b; }
+static V3 operator-(V3 a, V3 b){ return vec3(a.x - b.x, a.y - b.y, a.z - b.z); }
+static V3 operator-=(V3 &a, V3 b){ return a = a - b; }
+static V3 operator*(V3 a, V3 b){ return vec3(a.x * b.x, a.y * b.y, a.z * b.z); } // Hadamard
+static V3 operator/(V3 a, V3 b){ return vec3(a.x / b.x, a.y / b.y, a.z / b.z); }
+static V3 operator*(V3 a, F32 b){ return vec3(a.x * b, a.y * b, a.z * b); }
+static V3 operator*(F32 a, V3 b){ return vec3(a * b.x, a * b.y, a * b.z); }
+#endif
 
 //~ V3i
 
@@ -3133,10 +3261,7 @@ static V4 v4_mix(V4 a, F32 t, V4 b){ return v4_add( v4_scalar_mul(a, 1 - t), v4_
 
 static bool v4_bitwise_equal(V4 a, V4 b){ return a.x == b.x && a.y == b.y && a.z == b.z && a.w == b.w; }
 
-#if 0
-static __m128 v4_to_m128(V4 v){ return _mm_set_ps(v.w, v.z, v.y, v.x); }
-static V4 m128_to_v4(__m128 v){ V4 result; _mm_store_ps((F32*)&result, v); return result; }
-#endif
+static V3 v4_xyz(V4 v){ return vec3(v.x, v.y, v.z); }
 
 //~ Mat2x2
 
@@ -3210,6 +3335,127 @@ static V4 mul_mat4x4_v4(Mat4x4 m, V4 v){
 static Mat4x4 operator*(Mat4x4 a, Mat4x4 b){ return mat4x4_mul(a, b); }
 static V4 operator*(Mat4x4 m, V4 v){ return mul_mat4x4_v4(m, v); }
 #endif
+
+static V4 mat4x4_row(Mat4x4 mat, I32 index){
+  return vec4(mat.e[index][0], mat.e[index][1], mat.e[index][2], mat.e[index][3]);
+}
+static V4 mat4x4_column(Mat4x4 mat, I32 index){
+  return vec4(mat.e[0][index], mat.e[1][index], mat.e[2][index], mat.e[3][index]);
+}
+
+static Mat4x4 mat4x4_translate(V3 translate){
+  Mat4x4 result = mat4x4_identity();
+  result.e[0][3] = translate.x;
+  result.e[1][3] = translate.y;
+  result.e[2][3] = translate.z;
+  return result;
+}
+static Mat4x4 mat4x4_scale(V3 scale){
+  Mat4x4 result = {0};
+  result.e[0][0] = scale.x;
+  result.e[1][1] = scale.y;
+  result.e[2][2] = scale.z;
+  return result;
+}
+
+// NOTE(hanna): The following routines are all shamelessly stolen from Handmade Math
+// https://github.com/HandmadeMath/HandmadeMath
+// It is also licensed as public domain.
+
+static Mat4x4 mat4x4_rotation_from_axis(F32 angle, V3 axis){
+  Mat4x4 result = mat4x4_identity();
+
+  axis = v3_normalize(axis);
+
+  F32 sin_theta = sinf(angle);
+  F32 cos_theta = cosf(angle);
+  F32 cos_value = 1.0f - cos_theta;
+
+  result.e[0][0] = (axis.x * axis.x * cos_value) + cos_theta;
+  result.e[1][0] = (axis.x * axis.y * cos_value) + (axis.z * sin_theta);
+  result.e[2][0] = (axis.x * axis.z * cos_value) - (axis.y * sin_theta);
+
+  result.e[0][1] = (axis.y * axis.x * cos_value) - (axis.z * sin_theta);
+  result.e[1][1] = (axis.y * axis.y * cos_value) + cos_theta;
+  result.e[2][1] = (axis.y * axis.z * cos_value) + (axis.x * sin_theta);
+
+  result.e[0][2] = (axis.z * axis.x * cos_value) + (axis.y * sin_theta);
+  result.e[1][2] = (axis.z * axis.y * cos_value) - (axis.x * sin_theta);
+  result.e[2][2] = (axis.z * axis.z * cos_value) + cos_theta;
+
+  return result;
+}
+
+// fov specifies horizontal fov
+static Mat4x4 mat4x4_perspective(F32 fov, F32 aspect_ratio, F32 _near, F32 _far){
+  Mat4x4 result = {0};
+
+  F32 cotangent = 1.0f / tanf(fov / 2.0f);
+  result.e[0][0] = cotangent;
+  result.e[1][1] = cotangent * aspect_ratio;
+  result.e[2][3] = -1.0f;
+
+  result.e[2][2] = (_near + _far) / (_near - _far);
+  result.e[3][2] = (2.0f * _near * _far) / (_near - _far);
+
+  return result;
+}
+
+//~ Affine2x3
+
+typedef struct Affine2x3 Affine2x3;
+struct Affine2x3{
+  F32 e[2][3];
+  /*
+  NOTE(hanna): This represents a transformation corresponding to a 2x2 scale/rotate matrix combined with a translation.
+  The 2x2 matrix is the elements
+
+      e[0][0]   e[0][1]
+      e[1][0]   e[1][1]
+
+  and the translation corresponds to the elements
+
+     e[0][2]
+     e[1][2]
+
+  See routines below which use this for details.
+  */
+};
+CT_ASSERT(sizeof(Affine2x3) == 24); // Beware that this is not the smallest of structs!
+#define AFFINE2x3_IDENTITY ( (Affine2x3){ .e[0][0] = 1, .e[1][1] = 1 } )
+
+static Mat4x4 affine2x3_to_mat4x4(Affine2x3 t){
+  Mat4x4 result = MAT4x4_IDENTITY;
+  result.e[0][0] = t.e[0][0];
+  result.e[0][1] = t.e[0][1];
+  result.e[1][0] = t.e[1][0];
+  result.e[1][1] = t.e[1][1];
+  result.e[0][3] = t.e[0][2];
+  result.e[1][3] = t.e[1][2];
+  return result;
+}
+
+static V2 affine2x3_transform_v2(Affine2x3 t, V2 v){
+  V2 result;
+  result.x = v.x * t.e[0][0] + v.y * t.e[0][1] + t.e[0][2];
+  result.y = v.x * t.e[1][0] + v.y * t.e[1][1] + t.e[1][2];
+  return result;
+}
+
+static V2 affine2x3_inverse_transform_v2(Affine2x3 t, V2 v){
+  F32 inv_det = 1.f / (t.e[0][0] * t.e[1][1] - t.e[0][1] * t.e[1][0]);
+
+  v.x = inv_det * (v.x - t.e[0][2]);
+  v.y = inv_det * (v.y - t.e[1][2]);
+
+  V2 result;
+  result.x = +v.x * t.e[1][1] - v.y * t.e[0][1];
+  result.y = -v.x * t.e[1][0] + v.y * t.e[0][0];
+  return result;
+}
+
+static F32 r2d_transform_scale_x_squared(Affine2x3 t){ return SQUARE(t.e[0][0]) + SQUARE(t.e[0][1]); }
+static F32 r2d_transform_scale_y_squared(Affine2x3 t){ return SQUARE(t.e[1][0]) + SQUARE(t.e[1][1]); }
 
 //~ Rect2
 
@@ -3685,7 +3931,7 @@ static void _array_delete_range(Array_any *array, size_t element_size, U64 begin
           element_size * (array->count - end));
   array->count -= (end - begin);
 }
-#define array_delete_at(_array_, _index_) \
+#define array_delete_at_slow(_array_, _index_) \
   (_array_delete_range(&(_array_)->as_any_array, sizeof((_array_)->e[0]), (_index_), (_index_) + 1))
 
 #define array_delete_range(_array_, _begin_, _end_) \
@@ -3710,6 +3956,23 @@ static Array_any _array_copy(Array_any *src, size_t element_size, size_t element
 #define array_copy(_dst_, _src_) \
   ( (_dst_)->as_any_array = _array_copy(&(_src_)->as_any_array, sizeof((_src_)->e[0]), ALIGNOF_EXPR((_src_)->e[0])) )
 
+
+
+#if 0 // Ended up not being used, so commented out for now as it was never inspected in a debugger.
+static void _array_concatenate(Array_any *src, void *data, size_t element_count, size_t element_size, size_t element_align){
+  assert(element_count < UINT32_MAX);
+  assert(element_size < UINT32_MAX);
+
+  size_t old_count = src->count;
+  _array_set_count_noclear(src, src->count + element_count, element_size, element_align);
+  memcpy((U8*)src->e + old_count * element_size,
+         data,
+         element_count * element_size);
+}
+#define array_concatenate(_dst_, _data_, _count_) \
+  ( assert(sizeof((_dst_)->e[0]) == sizeof((_data_)[0]) && "Obvious type mismatch going on here!"), \
+    _array_concatenate((_dst_), (_data_), (_count_), sizeof((_dst_)->e[0]), ALIGNOF_EXPR((_dst_)->e[0])) )
+#endif
 
 //
 // Array(U8) STUFF
@@ -4218,10 +4481,6 @@ static I64 bn_shift_up(U64 *out, I64 count, U64 shift){
   clear_items(out, U64, big_shift);
   return result;
 }
-
-#ifdef COMPILER_MSVC
-#include <intrin.h>
-#endif
 
 static void bn_add(U64 *out, BigN a, BigN b){
   _bn_verify_init_and_unpadded(a);
@@ -6080,10 +6339,6 @@ TODO(hanna): This is a macro for while we are still transitioning to the new pri
 // Custom printf implementation
 //
 
-#if ARCH_X86_64
-#include <pmmintrin.h>
-#endif
-
 // BIG TODO: We should have a C parser go in and check that usages of this is fine
 
 static void sb_append_string_padded_len(StringBuilder *sb, String string, I64 string_length, I64 min_width, bool left, U8 padding_char){
@@ -7188,7 +7443,7 @@ static void thread_pool_cancel_job(ThreadPool *pool, Job *job);
 
 // NOTE: The job count semaphore must be updated outside of this routine.
 static void _thread_pool_do_one_job_no_semaphore(ThreadPool *pool){
-  mutex_lock(&pool->mutex);
+  os_mutex_lock(&pool->mutex);
   Job *job = pool->first_queued;
   assert(job);
 
@@ -7199,7 +7454,7 @@ static void _thread_pool_do_one_job_no_semaphore(ThreadPool *pool){
     pool->first_queued = job->next;
     assert(job->next);
   }
-  mutex_unlock(&pool->mutex);
+  os_mutex_unlock(&pool->mutex);
 
   if(atomic_read_u32(&job->status) == JOB_STATUS_queued){
     job->execute(job);
@@ -7243,7 +7498,7 @@ static void _thread_pool_worker_thread_entry_point_proc(void *userdata){
 }
 
 static void thread_pool_init(ThreadPool *pool, U32 num_workers){
-  mutex_init(&pool->mutex);
+  os_mutex_init(&pool->mutex);
   semaphore_init(&pool->job_count_semaphore);
 
   assert(num_workers <= ARRAY_COUNT(pool->workers));
@@ -7273,7 +7528,7 @@ static void thread_pool_destroy(ThreadPool *pool){
     free(worker);
   }
 
-  mutex_destroy(&pool->mutex);
+  os_mutex_destroy(&pool->mutex);
   semaphore_destroy(&pool->job_count_semaphore);
   clear_item(pool);
 }
@@ -7283,7 +7538,7 @@ static void thread_pool_submit_job(ThreadPool *pool, Job *job){
   atomic_store_u32(&job->status, JOB_STATUS_queued);
   atomic_add_u32(&pool->num_jobs_not_complete, 1);
 
-  mutex_lock(&pool->mutex);
+  os_mutex_lock(&pool->mutex);
   if(pool->first_queued){
     assert(pool->last_queued);
     pool->last_queued->next = job;
@@ -7292,7 +7547,7 @@ static void thread_pool_submit_job(ThreadPool *pool, Job *job){
     assert(!pool->last_queued);
     pool->first_queued = pool->last_queued = job;
   }
-  mutex_unlock(&pool->mutex);
+  os_mutex_unlock(&pool->mutex);
 
   // NOTE(hanna): Here we post after unlocking the mutex to increase the probability that the mutex is not locked when the other threads wake up.
   //              I have not done any tests to verify that this is actually the case, but it shouldn't hurt to do things this way.
@@ -7325,10 +7580,6 @@ static void thread_pool_actively_wait_for_job_completion(ThreadPool *pool, Job *
   }
 }
 
-#if ARCH_X86_64
-#include <emmintrin.h>
-#endif
-
 static void thread_pool_actively_wait_for_all_completion(ThreadPool *pool){
   while(semaphore_trywait(&pool->job_count_semaphore)){
     _thread_pool_do_one_job_no_semaphore(pool);
@@ -7350,36 +7601,49 @@ static void thread_pool_cancel_job(ThreadPool *pool, Job *job){
   }
 }
 
-//=============================
+//
+// Color
+//
+
+typedef struct Color32 Color32;
+struct Color32{
+  union{
+    U32 u32;
+    struct{ U8 r, g, b, a; };
+  };
+};
+static Color32 color32(U32 u32){
+  Color32 result = {0};
+  result.u32 = u32;
+  return result;
+}
+static Color32 color32_8888(U8 r, U8 g, U8 b, U8 a){
+  Color32 result = {0};
+  result.r = r;
+  result.g = g;
+  result.b = b;
+  result.a = a;
+  return result;
+}
+
+static V4 color32_to_v4(Color32 color){
+  return vec4( color.r * (1 / 255.0f), color.g * (1 / 255.0f), color.b * (1 / 255.0f), color.a * (1 / 255.0f));
+}
+static Color32 v4_to_color32(V4 color){
+  // TODO: Think about rounding here!!
+  return color32_8888(color.r * 255, color.g * 255, color.b * 255, color.a * 255);
+}
+static Color32 v3_to_color32(V3 color){
+  // TODO: Think about rounding here!!
+  return color32_8888(color.r * 255, color.g * 255, color.b * 255, 0xff);
+}
+
+
+//==============================================
 // BEGIN PLATFORM-SPECIFIC CODE IMPLEMENTATION
-//=============================
+//==============================================
 
 #if OS_LINUX
-
-//
-// NOTE: Include headers
-//
-
-#define _GNU_SOURCE
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <sys/mman.h>
-#include <sys/time.h>
-#include <fcntl.h>
-#include <dlfcn.h>
-
-#include <unistd.h>
-#include <time.h>
-#include <dirent.h>
-
-#include <stdarg.h>
-#include <string.h>
-#include <stdlib.h>
-
-#include <stdio.h>
-#include <errno.h>
-#include <pthread.h>
-#include <sys/random.h>
 
 //
 // NOTE: Implementation of the API
@@ -7511,6 +7775,59 @@ static void os_end_memory_map_file(OSFile file, OSMappedFile mapped_file){
     munmap(mapped_file.data, mapped_file.data_size);
   }
 }
+
+
+static OSDir os_read_directory_entries(String path, Allocator *allocator){
+  Allocator *temp = temp_begin();
+
+  OSDir result = {0};
+
+  DIR *dir = opendir(allocator_push_cstring(temp, path));
+
+  if(dir){
+    Array(String) filenames = array_create(String, allocator);
+
+    errno = 0;
+    for(struct dirent *entry; (entry = readdir(dir));){
+      String filename = string_from_cstring(entry->d_name);
+      if(!string_equals(filename, LIT_STR(".")) && !string_equals(filename, LIT_STR(".."))){
+        array_push(&filenames, filename);
+      }
+    }
+    if(!errno){
+      result.success = true;
+      result.entry_count = filenames.count;
+      result.entry_filenames = filenames.e;
+    }
+    closedir(dir); dir = NULL;
+  }
+
+  temp_end(&temp);
+  return result;
+}
+
+static OSPathInfo os_get_path_info(String path){
+  Allocator *temp = temp_begin();
+
+  OSPathInfo result = {0};
+
+  struct stat stat_buf;
+  if(stat(allocator_push_cstring(temp, path), &stat_buf) == 0){
+    if((stat_buf.st_mode & S_IFMT) == S_IFREG){
+      result.kind = OS_PATH_KIND_file;
+    }else if((stat_buf.st_mode & S_IFMT) == S_IFDIR){
+      result.kind = OS_PATH_KIND_directory;
+    }else{
+      result.kind = OS_PATH_KIND_other;
+    }
+  }else if(errno == ENOENT){
+    result.kind = OS_PATH_KIND_does_not_exist;
+  }
+
+  temp_end(&temp);
+  return result;
+}
+
 
 static uint64_t os_get_monotonic_time_us(){
   uint64_t result = 0;
@@ -7838,7 +8155,7 @@ static OSDir os_read_directory_entries(String path, Allocator *allocator){
     if(error == ERROR_NO_MORE_FILES){
       result.success = true;
       result.entry_count = filenames.count;
-      result.entry_file_names = filenames.e;
+      result.entry_filenames = filenames.e;
     }
 
     FindClose(find_handle);
@@ -7876,9 +8193,9 @@ static U64 os_get_monotonic_time_us(){
   LARGE_INTEGER time;
   QueryPerformanceCounter(&time); // Apparently never fails since Windows XP
   LARGE_INTEGER freq;
-  QueryPerformanceCounter(&freq); // Apparently never fails since Windows XP
+  QueryPerformanceFrequency(&freq); // Apparently never fails since Windows XP
 
-  return time.QuadPart * LIT_U64(1000000) / freq.QuadPart;
+  return (time.QuadPart * LIT_U64(1000000)) / freq.QuadPart;
 }
 static U64 os_get_unix_time_us(){
   // NOTE(hanna): I really don't know my way around the Windows API, so this is the solution I have come up with.
